@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: jdbc:mysql://${MYSQL_DB_HOST:localhost}:${MYSQL_DB_PORT:33306}/${MYSQL_DB_NAME:transaction}
+    username: ${MYSQL_DB_USERNAME:root}
+    password: ${MYSQL_DB_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver

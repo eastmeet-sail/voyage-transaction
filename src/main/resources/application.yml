@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: voyage-transaction
+  profiles:
+    active: ${SPRING_PROFILE:postgresql}
+  config:
+    import: optional:file:.env[.properties]
+  jpa:
+    hibernate:
+      ddl-auto: update
+    defer-datasource-initialization: true
+    properties:
+      hibernate:
+        format_sql: true
+        show_sql: true
+    open-in-view: false
+
+logging:
+  level:
+    org.springframework.transaction: DEBUG
+    org.springframework.orm.jpa: DEBUG
