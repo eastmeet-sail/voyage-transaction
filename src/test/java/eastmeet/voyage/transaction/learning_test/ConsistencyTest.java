@@ -74,15 +74,15 @@ class ConsistencyTest {
         BigDecimal totalBefore = from.getBalance().add(to.getBalance());
 
         txTemplate.executeWithoutResult(status -> {
-            Account txFrom = accountRepository.findById(from.getId()).orElseThrow();
-            Account txTo = accountRepository.findById(to.getId()).orElseThrow();
+            Account txFrom = accountService.getAccountById(from.getId());
+            Account txTo = accountService.getAccountById(to.getId());
 
             txFrom.withdraw(BigDecimal.valueOf(7_000));
             txTo.deposit(BigDecimal.valueOf(7_000));
         });
 
-        Account updatedFrom = accountRepository.findById(from.getId()).orElseThrow();
-        Account updatedTo = accountRepository.findById(to.getId()).orElseThrow();
+        Account updatedFrom = accountService.getAccountById(from.getId());
+        Account updatedTo = accountService.getAccountById(to.getId());
         BigDecimal totalAfter = updatedFrom.getBalance().add(updatedTo.getBalance());
 
         // 일관성: 총 잔액 보존
