@@ -10,8 +10,11 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.util.UUID;
 import lombok.AccessLevel;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.apache.commons.lang3.Validate;
+import org.jspecify.annotations.NonNull;
 
 @Entity
 @Getter
@@ -33,7 +36,9 @@ public class Account extends BaseTimeEntity {
     @Enumerated(EnumType.STRING)
     private AccountStatus status;
 
+    @Builder
     public Account(String ownerName, BigDecimal balance, AccountStatus status) {
+        Validate.notNull(balance, "초기 잔액은 필수입니다.");
         this.id = UUID.randomUUID();
         this.ownerName = ownerName;
         this.balance = balance;
@@ -41,6 +46,7 @@ public class Account extends BaseTimeEntity {
     }
 
     public void deposit(BigDecimal amount) {
+        validateAmount(amount);
         if (this.status != AccountStatus.ACTIVE) {
             throw new IllegalArgumentException("계좌상태" + "[" + status.getDescription() + "]" + "를 확인해주세요.");
         }
@@ -49,6 +55,7 @@ public class Account extends BaseTimeEntity {
     }
 
     public void withdraw(BigDecimal amount) {
+        validateAmount(amount);
         if (this.status != AccountStatus.ACTIVE) {
             throw new IllegalArgumentException("계좌상태" + "[" + status.getDescription() + "]" + "를 확인해주세요.");
         }
@@ -58,6 +65,17 @@ public class Account extends BaseTimeEntity {
         }
 
         this.balance = this.balance.subtract(amount);
+    }
+
+    private void validateAmount(BigDecimal amount) {
+        Validate.notNull(amount, "금액은 필수입니다.");
+        Validate.isTrue(amount.compareTo(BigDecimal.ZERO) > 0, "금액은 0보다 커야 합니다.");
+    }
+
+    public void updateStatus(@NonNull AccountStatus newStatus) {
+        if (this.status != newStatus) {
+            this.status = newStatus;
+        }
     }
 
 }
