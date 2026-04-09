@@ -133,11 +133,94 @@ accountRepository.flush();  // DB에 UPDATE 쿼리 전송 (커밋은 아님)
 
 ---
 
+## 2. Non-Repeatable Read
+
+> 같은 트랜잭션 안에서 같은 데이터를 두 번 조회했는데 결과가 다른 문제.
+
+Dirty Read와의 차이: Dirty Read는 **커밋 안 된** 데이터를 읽는 거고, Non-Repeatable Read는 **커밋된** 데이터 때문에 발생한다.
+
+### 시나리오
+
+```
+트랜잭션1 (조회 - READ_COMMITTED)      트랜잭션2 (수정)
+─────────────────────────              ─────────────
+1차 조회 → 10,000원
+                                       출금 7,000원 → 커밋 완료!
+2차 조회 → 3,000원 (?!)
+→ 같은 트랜잭션인데 결과가 달라짐
+```
+
+### 이름의 의미
+
+- Repeatable = 반복 가능한
+- Non-Repeatable = 반복 불가능한
+- **"같은 조회를 반복했는데 같은 결과가 나오지 않는다"**
+
+이걸 **방지**하는 격리 수준이 `REPEATABLE_READ` — "읽기를 반복해도 같은 결과를 보장한다"는 뜻.
+
+### 실험 결과
+
+```java
+// READ_COMMITTED: 1차 조회와 2차 조회 결과가 다름 → Non-Repeatable Read 발생
+assertThat(firstReadFromBalance.get()).isEqualByComparingTo(BigDecimal.valueOf(10_000));
+assertThat(secondReadFromBalance.get()).isEqualByComparingTo(BigDecimal.valueOf(3_000));
+
+// REPEATABLE_READ: 트랜잭션 시작 시점의 스냅샷을 읽음 → Non-Repeatable Read 방지
+assertThat(firstReadFromBalance.get()).isEqualByComparingTo(BigDecimal.valueOf(10_000));
+assertThat(secondReadFromBalance.get()).isEqualByComparingTo(BigDecimal.valueOf(10_000));
+```
+
+### Dirty Read와 Non-Repeatable Read 비교
+
+| | Dirty Read | Non-Repeatable Read |
+|--|-----------|-------------------|
+| 원인 | 커밋 **안 된** 데이터를 읽음 | 다른 트랜잭션이 **커밋한** 데이터를 읽음 |
+| writer 상태 | 롤백됨 (데이터가 존재하지 않았음) | 커밋됨 (데이터가 실제로 변경됨) |
+| 방지 격리 수준 | READ_COMMITTED 이상 | REPEATABLE_READ 이상 |
+| 핵심 | 존재하지 않는 데이터를 읽음 | 같은 트랜잭션인데 결과가 달라짐 |
+
+### JPA 1차 캐시 주의
+
+같은 트랜잭션에서 같은 ID로 `findById`를 두 번 호출하면, JPA는 DB에 가지 않고 **영속성 컨텍스트(1차 캐시)**에서 반환한다.
+
+```
+1차 조회 → DB 쿼리 → 10,000 → 영속성 컨텍스트에 캐싱
+2차 조회 → 영속성 컨텍스트에서 반환 → 10,000 (DB 안 감!)
+```
+
+Non-Repeatable Read를 실험하려면 2차 조회 전에 `entityManager.clear()`로 1차 캐시를 비워야 한다.
+
+### REPEATABLE_READ 내부 동작 — MVCC 스냅샷
+
+```
+READ_COMMITTED:    매 쿼리마다 최신 커밋된 스냅샷을 읽음
+REPEATABLE_READ:   트랜잭션 시작 시점의 스냅샷을 고정해서 읽음
+```
+
+| 격리 수준 | 스냅샷 시점 | 결과 |
+|-----------|-----------|------|
+| READ_COMMITTED | 매 쿼리 실행 시점 | 중간에 커밋되면 새 값 읽힘 |
+| REPEATABLE_READ | 트랜잭션 시작 시점 | 중간에 커밋되어도 이전 값 유지 |
+
+### SERIALIZABLE과의 차이 — 데드락 주의
+
+SERIALIZABLE은 스냅샷이 아니라 **잠금(lock)**으로 동작한다. reader가 읽은 행에 잠금을 걸어서 writer가 수정할 수 없게 만든다.
+
+```
+REPEATABLE_READ: 스냅샷 기반 → writer가 커밋해도 reader는 이전 값을 읽음 (비차단)
+SERIALIZABLE:    잠금 기반 → writer가 reader 트랜잭션 끝날 때까지 대기 (차단 → 데드락 위험)
+```
+
+---
+
 ## 검증 완료 목록
 
 - [x] READ_UNCOMMITTED에서 Dirty Read 발생 확인 — MySQL (DirtyReadTest)
 - [x] READ_COMMITTED에서 Dirty Read 방지 확인 — MySQL (DirtyReadTest)
 - [x] 실험군/비교군 동시 비교로 격리 수준 차이 검증 (DirtyReadTest)
+- [x] READ_COMMITTED에서 Non-Repeatable Read 발생 확인 (NonRepeatableReadTest)
+- [x] REPEATABLE_READ에서 Non-Repeatable Read 방지 확인 (NonRepeatableReadTest)
+- [x] JPA 1차 캐시와 entityManager.clear() 동작 확인 (NonRepeatableReadTest)
 
 ## ACID 학습 로드맵
 
@@ -150,7 +233,6 @@ accountRepository.flush();  // DB에 UPDATE 쿼리 전송 (커밋은 아님)
 
 ## 다음 학습 예정
 
-- [ ] Non-Repeatable Read — READ_COMMITTED에서 발생하는 문제
 - [ ] Phantom Read — REPEATABLE_READ에서 발생하는 문제
 - [ ] Lost Update — 동시 수정 시 데이터 유실
 - [ ] Locking — 비관적/낙관적 잠금
