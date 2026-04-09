@@ -10,8 +10,10 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.util.UUID;
 import lombok.AccessLevel;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.jspecify.annotations.NonNull;
 
 @Entity
 @Getter
@@ -33,6 +35,7 @@ public class Account extends BaseTimeEntity {
     @Enumerated(EnumType.STRING)
     private AccountStatus status;
 
+    @Builder
     public Account(String ownerName, BigDecimal balance, AccountStatus status) {
         this.id = UUID.randomUUID();
         this.ownerName = ownerName;
@@ -58,6 +61,12 @@ public class Account extends BaseTimeEntity {
         }
 
         this.balance = this.balance.subtract(amount);
+    }
+
+    public void updateStatus(@NonNull AccountStatus newStatus) {
+        if (this.status != newStatus) {
+            this.status = newStatus;
+        }
     }
 
 }
