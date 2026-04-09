@@ -42,7 +42,7 @@ class AccountServiceTest {
     void 가설_언체크드_익셉션은_롤백이될까() {
         BigDecimal amount = BigDecimal.valueOf(7_000);
         Assertions.assertThatThrownBy(
-            () -> accountService.transferWithUncheckedException(from.getId(), amount)
+            () -> accountService.withdrawWithUncheckedException(from.getId(), amount)
         ).isInstanceOf(RuntimeException.class);
 
         Account updatedFrom = accountService.getAccountById(from.getId());
@@ -54,7 +54,7 @@ class AccountServiceTest {
     void 가설_체크드_익셉션은_롤백이될까() {
         BigDecimal amount = BigDecimal.valueOf(7_000);
         Assertions.assertThatThrownBy(
-            () -> accountService.transferWithCheckedException(from.getId(), amount)
+            () -> accountService.withdrawWithCheckedException(from.getId(), amount)
         ).isInstanceOf(Exception.class);
 
         Account updatedFrom = accountService.getAccountById(from.getId());
@@ -67,7 +67,7 @@ class AccountServiceTest {
     void 가설_체크드_익셉션_이어도_rollbackFor_설정하면_롤백이_되는가() {
         BigDecimal amount = BigDecimal.valueOf(7_000);
         Assertions.assertThatThrownBy(
-            () -> accountService.transferWithCheckedExceptionAndRollbackFor(from.getId(), amount)
+            () -> accountService.withdrawWithCheckedExceptionAndRollbackFor(from.getId(), amount)
         ).isInstanceOf(Exception.class);
 
         Account updatedFrom = accountService.getAccountById(from.getId());
