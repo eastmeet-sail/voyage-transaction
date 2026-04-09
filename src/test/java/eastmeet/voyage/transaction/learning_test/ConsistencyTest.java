@@ -8,7 +8,6 @@ import eastmeet.voyage.transaction.account.domain.AccountStatus;
 import eastmeet.voyage.transaction.account.repository.AccountRepository;
 import eastmeet.voyage.transaction.account.service.AccountService;
 import java.math.BigDecimal;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,7 +18,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest
-public class ConsistencyTest {
+class ConsistencyTest {
 
     @Autowired
     private AccountRepository accountRepository;
@@ -37,7 +36,7 @@ public class ConsistencyTest {
     private Account to;
 
     @BeforeEach
-    public void setup() {
+    void setup() {
         txTemplate = new TransactionTemplate(transactionManager);
 
         from = accountRepository.save(Account.builder()
@@ -99,7 +98,7 @@ public class ConsistencyTest {
         to.updateStatus(AccountStatus.SUSPENDED);
         accountRepository.save(to);
 
-        Assertions.assertThatThrownBy(() -> txTemplate.executeWithoutResult(status -> {
+        assertThatThrownBy(() -> txTemplate.executeWithoutResult(status -> {
                 Account txFrom = accountService.getAccountById(from.getId());
                 Account txTo = accountService.getAccountById(to.getId());
 
