@@ -1,13 +1,14 @@
 package eastmeet.voyage.transaction.learning_test;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 import eastmeet.voyage.transaction.account.domain.Account;
 import eastmeet.voyage.transaction.account.domain.AccountStatus;
 import eastmeet.voyage.transaction.account.repository.AccountRepository;
 import eastmeet.voyage.transaction.account.service.AccountService;
 import java.math.BigDecimal;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -98,18 +99,14 @@ public class ConsistencyTest {
         to.updateStatus(AccountStatus.SUSPENDED);
         accountRepository.save(to);
 
-        try {
-            txTemplate.executeWithoutResult(status -> {
+        Assertions.assertThatThrownBy(() -> txTemplate.executeWithoutResult(status -> {
                 Account txFrom = accountService.getAccountById(from.getId());
                 Account txTo = accountService.getAccountById(to.getId());
 
                 txFrom.withdraw(BigDecimal.valueOf(7_000));
                 txTo.deposit(BigDecimal.valueOf(7_000)); // 실패
-            });
-
-        } catch (Exception ignored) {
-
-        }
+            }
+        )).isInstanceOf(IllegalArgumentException.class);
 
         Account updatedFrom = accountService.getAccountById(from.getId());
         Account updatedTo = accountService.getAccountById(to.getId());

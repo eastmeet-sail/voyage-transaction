@@ -3,7 +3,6 @@ package eastmeet.voyage.transaction.account.repository;
 import eastmeet.voyage.transaction.account.domain.Account;
 import java.math.BigDecimal;
 import java.util.UUID;
-import org.hibernate.sql.Update;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
