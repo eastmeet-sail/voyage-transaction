@@ -1,6 +1,7 @@
 package eastmeet.voyage.transaction.account.domain;
 
 import eastmeet.voyage.transaction.global.entity.BaseTimeEntity;
+import jakarta.persistence.CheckConstraint;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -20,7 +21,13 @@ import org.jspecify.annotations.NonNull;
 
 @Entity
 @Getter
-@Table(name = "accounts")
+@Table(
+    name = "accounts",
+    check = @CheckConstraint(
+        name = "ck_balance_non_negative",
+        constraint = "balance >= 0"
+    )
+)
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Account extends BaseTimeEntity {
 
