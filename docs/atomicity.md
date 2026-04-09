@@ -93,6 +93,94 @@ public void transfer(...) throws Exception {
 실무에서는 `rollbackFor = Exception.class`를 기본으로 쓰는 팀이 많다.
 "체크드 예외인데 커밋됐다"는 버그는 찾기가 매우 어렵기 때문.
 
+### Spring 내부 동작 — 롤백 결정 흐름
+
+`@Transactional`은 AOP 프록시로 동작하며, 예외 발생 시 아래 흐름을 탄다.
+
+```
+메서드 호출 → AOP 프록시 (TransactionInterceptor)
+→ 트랜잭션 시작
+→ 메서드 실행
+→ 예외 발생!
+→ completeTransactionAfterThrowing() 호출
+→ rollbackOn(ex) 체크
+   ├── true  → rollback()
+   └── false → commit()
+```
+
+#### 1단계: TransactionAspectSupport (진입점)
+
+```java
+// TransactionAspectSupport.java:705
+if (txInfo.transactionAttribute.rollbackOn(ex)) {
+    txInfo.getTransactionManager().rollback(txInfo.getTransactionStatus());
+} else {
+    txInfo.getTransactionManager().commit(txInfo.getTransactionStatus());
+}
+```
+
+#### 2단계: rollbackOn() — 기본 구현
+
+```java
+// DefaultTransactionAttribute.java:180
+public boolean rollbackOn(Throwable ex) {
+    return (ex instanceof RuntimeException || ex instanceof Error);
+}
+```
+
+이 한 줄이 "Checked Exception은 롤백 안 됨"의 근거.
+
+#### 3단계: rollbackOn() — rollbackFor 설정 시
+
+`rollbackFor`를 설정하면 `RuleBasedTransactionAttribute`가 사용된다.
+
+```java
+// RuleBasedTransactionAttribute.java:121
+@Override
+public boolean rollbackOn(Throwable ex) {
+    RollbackRuleAttribute winner = null;
+    int deepest = Integer.MAX_VALUE;
+
+    for (RollbackRuleAttribute rule : this.rollbackRules) {
+        int depth = rule.getDepth(ex);       // 예외 상속 계층에서의 거리
+        if (depth >= 0 && depth < deepest) {  // 가장 가까운(구체적인) 규칙이 이김
+            deepest = depth;
+            winner = rule;
+        }
+    }
+
+    if (winner == null) {
+        return super.rollbackOn(ex);  // 매칭 규칙 없으면 기본 동작
+    }
+    return !(winner instanceof NoRollbackRuleAttribute);
+}
+```
+
+#### 4단계: getDepth() — 재귀로 상속 체인 탐색
+
+```java
+// RollbackRuleAttribute.java:169
+private int getDepth(Class<?> exceptionType, int depth) {
+    if (this.exceptionType.equals(exceptionType)) {
+        return depth;  // 매칭! 현재 depth 반환
+    }
+    if (exceptionType == Throwable.class) {
+        return -1;     // 끝까지 못 찾음
+    }
+    return getDepth(exceptionType.getSuperclass(), depth + 1);  // 부모로 올라감
+}
+```
+
+예시: `rollbackFor = Exception.class`일 때 `FileNotFoundException` 발생
+
+```
+getDepth(FileNotFoundException, 0) → 매칭? No
+getDepth(IOException, 1)          → 매칭? No
+getDepth(Exception, 2)            → 매칭! return 2
+```
+
+`depth`가 작을수록 더 구체적인 규칙 → **가장 구체적인 규칙이 우선**한다.
+
 ## 주의사항
 
 ### 트랜잭션이 관리하는 것은 DB 상태이지, 자바 객체가 아니다
