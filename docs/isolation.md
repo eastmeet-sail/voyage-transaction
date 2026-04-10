@@ -410,11 +410,34 @@ assertThat(writer2Exception.get()).isNull();
 
 READ_COMMITTED는 **매 쿼리마다 최신 커밋된 스냅샷**을 읽는다. 트랜잭션 시작 시점에 스냅샷을 고정하지 않으므로, "내가 읽은 이후 변경되었나?"를 추적할 **기준점이 없다.** REPEATABLE_READ는 스냅샷을 고정하기 때문에 기준점이 있어서 충돌 감지가 가능하다.
 
+### 낙관적 락 (@Version)으로 Lost Update 방지
+
+JPA의 `@Version`을 엔티티에 추가하면, Hibernate가 UPDATE 쿼리에 버전 조건을 추가한다:
+
+```sql
+-- @Version 없이 (Lost Update 발생 ��능)
+UPDATE accounts SET balance = 7000 WHERE id = ?
+
+-- @Version 적용 (Lost Update 방지)
+UPDATE accounts SET balance = 7000, version = 1 WHERE id = ? AND version = 0
+```
+
+TX1이 version을 0→1로 바꾸면, TX2의 `WHERE version = 0`에 매칭되는 행이 없어 `ObjectOptimisticLockingFailureException`이 발생한다.
+
+| DB | 격리 수준 | @Version 없이 | @Version 적용 후 |
+|----|----------|-------------|----------------|
+| PostgreSQL | READ_COMMITTED | Lost Update 발생 | **방지** (Hibernate 감지) |
+| PostgreSQL | REPEATABLE_READ | 방지 (DB 감지) | **이중 보호** (DB가 먼저 감지) |
+| MySQL InnoDB | REPEATABLE_READ | Lost Update 발생 | **방지** (Hibernate 감지) |
+
+`@Version`은 **모든 DB, 모든 격리 수준**에서 동작하므로 DB 구현에 의존하지 않는 안전한 방법이다.
+
 ### 실무적 의미
 
-- **MySQL**: 기본 격리 수준(REPEATABLE_READ)에서 Lost Update가 **조용히** 발생한다 — 반드시 별도 잠금이 필요
-- **PostgreSQL**: REPEATABLE_READ로 올리면 방지되지만, 기본값(READ_COMMITTED)에서는 발생한다
-- **해결책**: 비관적 락(`SELECT FOR UPDATE`) 또는 낙관적 락(`@Version`) — Locking 학습에서 다룬다
+- **MySQL**: 기본 격리 수준(REPEATABLE_READ)에서 Lost Update가 **조용히** 발생한다 — `@Version` 또는 비관적 락 필요
+- **PostgreSQL**: REPEATABLE_READ로 올리면 DB 레벨에서 방지되지만, 기본값(READ_COMMITTED)에서는 발생한다
+- **낙관적 락 선택 기준**: 충돌이 드문 경우에 적합, 충돌 시 재시도 로직 필요
+- **비관적 락 선택 기준**: 충돌이 빈번한 경우에 적합 — Locking 학습에서 다룬다
 
 ---
 
@@ -455,6 +478,9 @@ READ_COMMITTED는 **매 쿼리마다 최신 커밋된 스냅샷**을 읽는다. 
 - [x] READ_COMMITTED에서 Lost Update 발생 확인 — PostgreSQL (LostUpdatePostgreSQLTest)
 - [x] REPEATABLE_READ에서 Lost Update 방지 확인 — PostgreSQL First-Committer-Wins (LostUpdatePostgreSQLTest)
 - [x] REPEATABLE_READ에서 Lost Update 발생 확인 — MySQL Last-Committer-Wins (LostUpdateMySQLTest)
+- [x] @Version 낙관적 락으로 Lost Update 방지 확인 — MySQL (LostUpdateMySQLTest)
+- [x] @Version 낙관적 락으로 Lost Update 방지 확인 — PostgreSQL READ_COMMITTED (LostUpdatePostgreSQLTest)
+- [x] @Version + REPEATABLE_READ 이중 보호 확인 — PostgreSQL (LostUpdatePostgreSQLTest)
 
 ## ACID 학습 로드맵
 
@@ -468,4 +494,6 @@ READ_COMMITTED는 **매 쿼리마다 최신 커밋된 스냅샷**을 읽는다. 
 ## 다음 학습 예정
 
 - [x] Lost Update — 동시 수정 시 데이터 유실
-- [ ] Locking — 비관적/낙관적 잠금 (Phantom Read + Locking Read 포함)
+- [x] 낙관적 락 (@Version) — 커밋 시점 버전 검증으로 Lost Update 방지
+- [ ] 비관적 락 (SELECT FOR UPDATE) — 읽기 시점부터 배타적 잠금
+- [ ] Locking Read와 Phantom Read — REPEATABLE_READ에서 Phantom Read가 발생하는 경우

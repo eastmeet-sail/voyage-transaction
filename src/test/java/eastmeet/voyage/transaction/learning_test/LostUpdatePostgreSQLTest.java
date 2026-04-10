@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -66,17 +67,16 @@ class LostUpdatePostgreSQLTest {
     }
 
     /**
-     * PostgreSQL READ_COMMITTED (기본값) — Last-Committer-Wins (Lost Update 발생) 검증
+     * PostgreSQL READ_COMMITTED + @Version(낙관적 락) — Lost Update 방지 검증
      *
-     * READ_COMMITTED는 스냅샷을 트랜잭션 시작 시점에 고정하지 않고, 매 쿼리마다 최신 커밋 값을 읽는다.
-     * 따라서 "내가 읽은 이후 변경되었나?"를 추적할 기준점이 없어 충돌 감지가 불가능하다.
-     * REPEATABLE_READ의 First-Committer-Wins와 달리, 나중 커밋이 이전 커밋을 조용히 덮어쓴다.
+     * @Version 없이는 READ_COMMITTED에서 Last-Committer-Wins로 Lost Update가 조용히 발생했다.
+     * READ_COMMITTED는 스냅샷을 고정하지 않아 DB 레벨 충돌 감지가 불가능하지만,
+     * @Version이 UPDATE WHERE version=? 조건을 추가하여 애플리케이션 레벨에서 충돌을 감지한다.
      *
-     * 실제 결과: TX2의 이체만 반영 (from=7,000, to=13,000) — TX1의 5,000원 이체가 유실됨
-     * 정상 결과(둘 다 반영 시): from=2,000, to=18,000
+     * 결과: TX1만 반영 (from=5,000, to=15,000), TX2는 ObjectOptimisticLockingFailureException으로 롤백
      */
     @Test
-    void READ_COMMITTED에서_나중에_커밋한_트랜잭션이_이전_변경을_덮어쓰는가() throws InterruptedException {
+    void READ_COMMITTED에서_VERSION_낙관적_락으로_Lost_Update가_방지되는가() throws InterruptedException {
         TransactionTemplate tx1 = new TransactionTemplate(transactionManager);
         tx1.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
 
@@ -135,7 +135,7 @@ class LostUpdatePostgreSQLTest {
                     BigDecimal amount = BigDecimal.valueOf(3_000);
                     tx2From.withdraw(amount);  // 10,000 - 3,000 = 7,000 (stale 값 기반!)
                     tx2To.deposit(amount);     // 10,000 + 3,000 = 13,000 (stale 값 기반!)
-                    // dirty checking → UPDATE SET balance=7,000 / 13,000 → 충돌 감지 없이 커밋 성공
+                    // dirty checking → UPDATE WHERE version=0 시도 → version 불일치 → 예외 발생!
                 });
             } catch (Exception ex) {
                 writer2Exception.set(ex);
@@ -150,18 +150,20 @@ class LostUpdatePostgreSQLTest {
         Account fromAccount = accountService.getAccountById(from.getId());
         Account toAccount = accountService.getAccountById(to.getId());
 
-        assertThat(fromAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(7_000));
-        assertThat(toAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(13_000));
+        assertThat(fromAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(5_000));
+        assertThat(toAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(15_000));
         assertThat(writer1Exception.get()).isNull();
-        assertThat(writer2Exception.get()).isNull();
+        assertThat(writer2Exception.get()).isNotNull().isInstanceOf(ObjectOptimisticLockingFailureException.class);
     }
 
     /**
-     * PostgreSQL REPEATABLE_READ — First-Committer-Wins 검증
-     * <p>
-     * 두 트랜잭션이 같은 스냅샷(10,000원)을 읽고 각자 수정하면, 먼저 커밋한 TX1만 성공하고, 나중에 커밋하는 TX2는 충돌 감지되어 롤백된다.
-     * <p>
-     * 기대 결과: TX1의 이체만 반영 (from=5,000, to=15,000) 정상 결과(둘 다 성공 시): from=2,000, to=18,000
+     * PostgreSQL REPEATABLE_READ + @Version — 이중 보호 (DB + 애플리케이션) 검증
+     *
+     * PostgreSQL REPEATABLE_READ는 자체적으로 First-Committer-Wins로 Lost Update를 방지한다.
+     * @Version이 추가되면 DB 레벨(MVCC) + 애플리케이션 레벨(version 비교) 이중 보호가 된다.
+     * 실제로는 DB의 serialization failure가 먼저 감지되어 CannotAcquireLockException이 발생한다.
+     *
+     * 결과: TX1만 반영 (from=5,000, to=15,000), TX2는 CannotAcquireLockException으로 롤백
      */
     @Test
     void REPEATABLE_READ에서_먼저_커밋한_트랜잭션만_성공하고_나중_트랜잭션은_롤백되는가() throws InterruptedException {
