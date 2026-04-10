@@ -412,10 +412,18 @@ READ_COMMITTED는 **매 쿼리마다 최신 커밋된 스냅샷**을 읽는다. 
 
 ### 낙관적 락 (@Version)으로 Lost Update 방지
 
+#### 역사적 배경
+
+1981년, H.T. Kung과 John Robinson이 논문 **"On Optimistic Methods for Concurrency Control"**에서 낙관적 동시성 제어를 제안했다. 기존의 비관적 방식(미리 잠금)은 읽기가 많고 충돌이 드문 환경에서 불필요한 대기를 유발했다. 낙관적 방식은 "충돌은 드물 것이다"라는 가정 하에 **일단 진행하고, 커밋 시점에 검증**하는 접근이다.
+
+JPA의 `@Version`은 이 낙관적 동시성 제어를 애플리케이션 레벨에서 구현한 것이다. DB 엔진에 의존하지 않고, Hibernate가 UPDATE 쿼리에 버전 조건을 추가하여 충돌을 감지한다.
+
+#### 동작 원리
+
 JPA의 `@Version`을 엔티티에 추가하면, Hibernate가 UPDATE 쿼리에 버전 조건을 추가한다:
 
 ```sql
--- @Version 없이 (Lost Update 발생 ��능)
+-- @Version 없이 (Lost Update 발생 가능)
 UPDATE accounts SET balance = 7000 WHERE id = ?
 
 -- @Version 적용 (Lost Update 방지)
