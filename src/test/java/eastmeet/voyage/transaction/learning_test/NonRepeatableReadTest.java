@@ -1,4 +1,4 @@
-package eastmeet.voyage.transaction.learning_test.isolation;
+package eastmeet.voyage.transaction.learning_test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
