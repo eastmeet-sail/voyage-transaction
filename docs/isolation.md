@@ -328,9 +328,99 @@ List<Account> accounts = accountRepository.findByStatusForUpdate(ACTIVE);
 
 ---
 
+## 4. Lost Update
+
+> 두 트랜잭션이 같은 데이터를 읽고 각자 수정하면, 먼저 커밋한 변경이 유실되는 문제.
+
+앞서 다룬 Dirty Read, Non-Repeatable Read, Phantom Read는 모두 **읽기(Read) 쪽의 문제**였다. Lost Update는 **쓰기 충돌(Write-Write Conflict)** 문제로, SQL 표준(1992)의 격리 수준 정의에 포함되지 않았다.
+
+### 역사적 배경
+
+1995년 Jim Gray(트랜잭션 이론의 아버지, 튜링상 수상자)가 발표한 논문 **"A Critique of ANSI SQL Isolation Levels"**(Berenson et al.)에서 SQL 표준의 3가지 읽기 현상(read phenomena) 분류가 불완전하다고 지적했다. Lost Update는 표준이 다루지 못한 대표적인 동시성 문제이다.
+
+### 시나리오
+
+```
+계좌 잔액: 10,000원
+
+TX1 (5,000원 이체)                   TX2 (3,000원 이체)
+──────────────                       ──────────────
+잔액 조회 → 10,000원
+                                     잔액 조회 → 10,000원 (같은 스냅샷)
+출금 5,000원
+UPDATE balance = 5,000 → 커밋
+                                     출금 3,000원
+                                     UPDATE balance = 7,000 → 커밋
+                                     → TX1의 출금이 유실됨!
+
+기대값: 10,000 - 5,000 - 3,000 = 2,000원
+실제값: 10,000 - 3,000 = 7,000원
+```
+
+### 왜 발생하는가 — Read-Modify-Write 패턴
+
+JPA/Hibernate에서 엔티티를 수정하는 흐름:
+
+```
+1. SELECT로 엔티티 조회 (balance를 Java 메모리에 읽음)    ← 락 없음
+2. Java에서 balance - amount 계산                         ← 락 없음
+3. 트랜잭션 커밋 시 UPDATE SET balance = ? WHERE id = ?   ← row lock 획득
+```
+
+InnoDB의 row lock은 **3번(UPDATE 시점)**에서만 걸린다. 1번(SELECT)에서는 보호가 없으므로 두 트랜잭션이 같은 값을 읽고, 각자 계산한 결과로 덮어쓰는 것이다.
+
+### DB별 동작 차이
+
+| DB | 격리 수준 | Lost Update | 전략 |
+|----|----------|-------------|------|
+| PostgreSQL | READ_COMMITTED (기본값) | **발생** | Last-Committer-Wins |
+| PostgreSQL | REPEATABLE_READ | **방지** | First-Committer-Wins |
+| MySQL InnoDB | REPEATABLE_READ (기본값) | **발생** | Last-Committer-Wins |
+
+### Last-Committer-Wins vs First-Committer-Wins
+
+**Last-Committer-Wins** (MySQL REPEATABLE_READ, PostgreSQL READ_COMMITTED):
+- 나중에 커밋한 트랜잭션이 이전 커밋을 **조용히 덮어쓴다**
+- 에러 없음, 로그 없음 — 데이터가 유실되어도 알 수 없음
+
+**First-Committer-Wins** (PostgreSQL REPEATABLE_READ):
+- 먼저 커밋한 트랜잭션만 성공
+- 나중 트랜잭션은 충돌 감지되어 **롤백됨**
+- `CannotAcquireLockException: could not serialize access due to concurrent update`
+
+### 실험 결과
+
+```java
+// PostgreSQL READ_COMMITTED — Lost Update 발생 (Last-Committer-Wins)
+assertThat(fromBalance).isEqualByComparingTo(BigDecimal.valueOf(7_000));  // TX2만 반영
+assertThat(writer1Exception.get()).isNull();  // 둘 다 예외 없음
+assertThat(writer2Exception.get()).isNull();
+
+// PostgreSQL REPEATABLE_READ — Lost Update 방지 (First-Committer-Wins)
+assertThat(fromBalance).isEqualByComparingTo(BigDecimal.valueOf(5_000));  // TX1만 반영
+assertThat(exception.get()).isInstanceOf(CannotAcquireLockException.class);  // TX2 롤백
+
+// MySQL REPEATABLE_READ — Lost Update 발생 (Last-Committer-Wins)
+assertThat(fromBalance).isEqualByComparingTo(BigDecimal.valueOf(7_000));  // TX2만 반영
+assertThat(writer1Exception.get()).isNull();  // 둘 다 예외 없음
+assertThat(writer2Exception.get()).isNull();
+```
+
+### PostgreSQL은 왜 READ_COMMITTED에서 감지 못하나?
+
+READ_COMMITTED는 **매 쿼리마다 최신 커밋된 스냅샷**을 읽는다. 트랜잭션 시작 시점에 스냅샷을 고정하지 않으므로, "내가 읽은 이후 변경되었나?"를 추적할 **기준점이 없다.** REPEATABLE_READ는 스냅샷을 고정하기 때문에 기준점이 있어서 충돌 감지가 가능하다.
+
+### 실무적 의미
+
+- **MySQL**: 기본 격리 수준(REPEATABLE_READ)에서 Lost Update가 **조용히** 발생한다 — 반드시 별도 잠금이 필요
+- **PostgreSQL**: REPEATABLE_READ로 올리면 방지되지만, 기본값(READ_COMMITTED)에서는 발생한다
+- **해결책**: 비관적 락(`SELECT FOR UPDATE`) 또는 낙관적 락(`@Version`) — Locking 학습에서 다룬다
+
+---
+
 ## 동시성 문제 정리
 
-### 3가지 문제 비교
+### 읽기 문제 (SQL 표준)
 
 | 문제 | 대상 | 원인 | 최소 방지 격리 수준 |
 |------|------|------|-------------------|
@@ -338,10 +428,16 @@ List<Account> accounts = accountRepository.findByStatusForUpdate(ACTIVE);
 | **Non-Repeatable Read** | 단일 행 | 다른 트랜잭션이 UPDATE + 커밋 | REPEATABLE_READ |
 | **Phantom Read** | 범위 조회 | 다른 트랜잭션이 INSERT/DELETE + 커밋 | SERIALIZABLE (표준) / REPEATABLE_READ (실제) |
 
+### 쓰기 문제 (SQL 표준 미포함)
+
+| 문제 | 대상 | 원인 | 방지 방법 |
+|------|------|------|----------|
+| **Lost Update** | 단일 행 | 두 트랜잭션이 같은 값을 읽고 각자 수정 | 비관적 락 / 낙관적 락 |
+
 ### 실무 권장사항
 
-- **MySQL**: 기본 `REPEATABLE_READ`로 3가지 문제 모두 방지됨 → 대부분 기본값으로 충분
-- **PostgreSQL**: 기본 `READ_COMMITTED`이므로 Non-Repeatable Read가 발생할 수 있음 → 필요 시 `REPEATABLE_READ`로 상향
+- **MySQL**: 기본 `REPEATABLE_READ`로 읽기 문제 3가지는 방지되지만, Lost Update는 별도 잠금 필요
+- **PostgreSQL**: 기본 `READ_COMMITTED`에서 Non-Repeatable Read와 Lost Update 모두 발생 가능 → 필요 시 `REPEATABLE_READ`로 상향하거나 잠금 사용
 - **SERIALIZABLE**: 성능 비용이 크므로 꼭 필요한 경우에만 사용
 
 ---
@@ -356,6 +452,9 @@ List<Account> accounts = accountRepository.findByStatusForUpdate(ACTIVE);
 - [x] JPA 1차 캐시와 entityManager.clear() 동작 확인 (NonRepeatableReadTest)
 - [x] REPEATABLE_READ에서 Phantom Read 방지 확인 — MySQL, PostgreSQL (PhantomReadTest)
 - [x] SQL 표준과 실제 DB 구현의 차이 확인 (PhantomReadTest)
+- [x] READ_COMMITTED에서 Lost Update 발생 확인 — PostgreSQL (LostUpdatePostgreSQLTest)
+- [x] REPEATABLE_READ에서 Lost Update 방지 확인 — PostgreSQL First-Committer-Wins (LostUpdatePostgreSQLTest)
+- [x] REPEATABLE_READ에서 Lost Update 발생 확인 — MySQL Last-Committer-Wins (LostUpdateMySQLTest)
 
 ## ACID 학습 로드맵
 
@@ -368,5 +467,5 @@ List<Account> accounts = accountRepository.findByStatusForUpdate(ACTIVE);
 
 ## 다음 학습 예정
 
-- [ ] Lost Update — 동시 수정 시 데이터 유실
+- [x] Lost Update — 동시 수정 시 데이터 유실
 - [ ] Locking — 비관적/낙관적 잠금 (Phantom Read + Locking Read 포함)
