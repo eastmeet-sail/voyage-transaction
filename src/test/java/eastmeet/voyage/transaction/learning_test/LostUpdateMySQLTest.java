@@ -172,7 +172,8 @@ class LostUpdateMySQLTest {
      * MySQL 특이점: REPEATABLE_READ에서도 SELECT FOR UPDATE는 항상 최신 커밋된 값을 읽는다.
      * (Consistent Non-locking Read의 스냅샷과 달리, Locking Read는 최신 값 기준)
      *
-     * CountDownLatch 없음: SELECT FOR UPDATE가 자체적으로 직렬화를 보장하므로 애플리케이션 동기화 불필요
+     * CountDownLatch(tx1Locked): TX1이 락을 획득한 후 TX2가 SELECT FOR UPDATE를 시도하도록 동기화.
+     * 두 트랜잭션이 시간적으로 겹치는 시나리오를 강제하여 비관적 락의 대기 동작을 확실히 검증한다.
      *
      * 결과: 두 이체 모두 반영 (from=2,000, to=18,000), 예외 없음
      */
@@ -184,12 +185,16 @@ class LostUpdateMySQLTest {
         TransactionTemplate tx2 = new TransactionTemplate(transactionManager);
         tx2.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
 
+        CountDownLatch tx1Locked = new CountDownLatch(1);
+
         AtomicReference<Exception> writer1Exception = new AtomicReference<>();
         Thread writer1 = new Thread(() -> {
             try {
                 tx1.executeWithoutResult(status -> {
                     Account tx1From = accountService.getAccountByIdForUpdate(from.getId());
                     Account tx1To = accountService.getAccountByIdForUpdate(to.getId());
+
+                    tx1Locked.countDown();
 
                     BigDecimal amount = BigDecimal.valueOf(5_000);
                     tx1From.withdraw(amount);  // 10,000 - 5,000 = 5,000
@@ -205,6 +210,11 @@ class LostUpdateMySQLTest {
         Thread writer2 = new Thread(() -> {
             try {
                 tx2.executeWithoutResult(status -> {
+                    try {
+                        tx1Locked.await();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
                     Account tx2From = accountService.getAccountByIdForUpdate(from.getId());
                     Account tx2To = accountService.getAccountByIdForUpdate(to.getId());
 
