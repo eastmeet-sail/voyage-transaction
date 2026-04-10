@@ -440,12 +440,88 @@ TX1이 version을 0→1로 바꾸면, TX2의 `WHERE version = 0`에 매칭되는
 
 `@Version`은 **모든 DB, 모든 격리 수준**에서 동작하므로 DB 구현에 의존하지 않는 안전한 방법이다.
 
+### 비관적 락 (SELECT FOR UPDATE)으로 Lost Update 방지
+
+#### 역사적 배경
+
+비관적 동시성 제어는 1970년대 IBM의 **System R** 프로젝트에서 체계화되었다. Jim Gray가 주도한 이 프로젝트에서 **2PL(Two-Phase Locking)** 프로토콜이 정립되었고, 이는 현대 RDBMS 잠금 메커니즘의 기초가 되었다.
+
+2PL의 핵심 원칙:
+- **Growing Phase**: 필요한 잠금을 계속 획득 (해제 불가)
+- **Shrinking Phase**: 잠금을 해제하기 시작하면 더 이상 획득 불가
+
+`SELECT FOR UPDATE`는 이 2PL의 실용적 구현이다. 읽기 시점부터 **배타적 잠금(X lock)**을 걸어, 다른 트랜잭션이 같은 행을 읽거나 수정하지 못하게 차단한다.
+
+#### 낙관적 락과의 핵심 차이
+
+| | 낙관적 락 (@Version) | 비관적 락 (SELECT FOR UPDATE) |
+|--|---------------------|------------------------------|
+| 잠금 시점 | 커밋 시점에 검증 | **읽기 시점**부터 잠금 |
+| 충돌 처리 | 예외 발생 → 재시도 필요 | 대기 → 한 번에 성공 |
+| 성능 | 충돌 적으면 유리 | 충돌 많으면 유리 |
+| TX2 결과 | 롤백 (ObjectOptimisticLockingFailureException) | **성공** (최신 값 기반으로 처리) |
+
+#### 동작 원리
+
+```
+낙관적 락:
+TX1: SELECT → 계산 → UPDATE WHERE version=0 → 성공 (version 0→1)
+TX2: SELECT → 계산 → UPDATE WHERE version=0 → 매칭 0건 → 예외!
+
+비관적 락:
+TX1: SELECT FOR UPDATE (X lock 획득) → 계산 → UPDATE → 커밋 → lock 해제
+TX2: SELECT FOR UPDATE → TX1 lock 때문에 대기... → TX1 커밋 후 최신 값 읽기 → 계산 → UPDATE → 성공
+```
+
+비관적 락에서 TX2는 TX1이 커밋한 **최신 값**을 읽는다. stale 값이 아니므로 두 이체 모두 정확하게 반영된다.
+
+#### 실험 결과
+
+```java
+// PostgreSQL READ_COMMITTED + SELECT FOR UPDATE — 두 이체 모두 반영
+assertThat(fromBalance).isEqualByComparingTo(BigDecimal.valueOf(2_000));   // 10,000 - 5,000 - 3,000
+assertThat(toBalance).isEqualByComparingTo(BigDecimal.valueOf(18_000));    // 10,000 + 5,000 + 3,000
+assertThat(writer1Exception.get()).isNull();  // 예외 없음
+assertThat(writer2Exception.get()).isNull();  // 예외 없음
+
+// MySQL REPEATABLE_READ + SELECT FOR UPDATE — 동일한 결과
+assertThat(fromBalance).isEqualByComparingTo(BigDecimal.valueOf(2_000));
+assertThat(toBalance).isEqualByComparingTo(BigDecimal.valueOf(18_000));
+```
+
+#### CountDownLatch가 필요 없는 이유
+
+낙관적 락 테스트에서는 `CountDownLatch`로 "둘 다 읽은 후 → writer1 커밋 후 → writer2 쓰기"를 강제했다. 비관적 락에서는 DB가 `SELECT FOR UPDATE`의 X lock으로 **자체적으로 직렬화**를 보장하므로, 애플리케이션 레벨의 동기화가 불필요하다.
+
+```
+낙관적 락: CountDownLatch 필요 (충돌 시나리오를 강제로 만들어야 함)
+비관적 락: CountDownLatch 불필요 (DB가 직렬화를 보장)
+```
+
+#### MySQL 특이점 — Locking Read와 스냅샷
+
+MySQL `REPEATABLE_READ`에서 일반 SELECT는 트랜잭션 시작 시점의 스냅샷을 읽는다 (Consistent Non-locking Read). 하지만 `SELECT FOR UPDATE`는 **항상 최신 커밋된 값**을 읽는다 (Locking Read). 이 차이가 비관적 락이 Lost Update를 방지하는 핵심이다.
+
+```
+일반 SELECT (Non-locking Read):    스냅샷 기준 → stale 값 읽을 수 있음
+SELECT FOR UPDATE (Locking Read):  최신 커밋 기준 → 항상 fresh 값
+```
+
+### 낙관적 락 vs 비관적 락 — 선택 기준
+
+| 상황 | 추천 | 이유 |
+|------|------|------|
+| 충돌이 드문 경우 (읽기 > 쓰기) | 낙관적 락 | 잠금 비용 없음, 대부분 성공 |
+| 충돌이 빈번한 경우 (쓰기 > 쓰기) | 비관적 락 | 재시도 비용 없음, 한 번에 성공 |
+| 재시도가 어려운 비즈니스 로직 | 비관적 락 | 실패 자체를 방지 |
+| 긴 트랜잭션 | 낙관적 락 | 오래 잠금 유지하면 데드락 위험 |
+
 ### 실무적 의미
 
 - **MySQL**: 기본 격리 수준(REPEATABLE_READ)에서 Lost Update가 **조용히** 발생한다 — `@Version` 또는 비관적 락 필요
 - **PostgreSQL**: REPEATABLE_READ로 올리면 DB 레벨에서 방지되지만, 기본값(READ_COMMITTED)에서는 발생한다
-- **낙관적 락 선택 기준**: 충돌이 드문 경우에 적합, 충돌 시 재시도 로직 필요
-- **비관적 락 선택 기준**: 충돌이 빈번한 경우에 적합 — Locking 학습에서 다룬다
+- **낙관적 락**: 충돌 시 `ObjectOptimisticLockingFailureException` 발생 → 재시도 로직 필요
+- **비관적 락**: TX2가 대기 후 최신 값으로 성공 → 재시도 불필요, 단 데드락 주의
 
 ---
 
@@ -489,6 +565,8 @@ TX1이 version을 0→1로 바꾸면, TX2의 `WHERE version = 0`에 매칭되는
 - [x] @Version 낙관적 락으로 Lost Update 방지 확인 — MySQL (LostUpdateMySQLTest)
 - [x] @Version 낙관적 락으로 Lost Update 방지 확인 — PostgreSQL READ_COMMITTED (LostUpdatePostgreSQLTest)
 - [x] @Version + REPEATABLE_READ 이중 보호 확인 — PostgreSQL (LostUpdatePostgreSQLTest)
+- [x] SELECT FOR UPDATE 비관적 락으로 Lost Update 방지 확인 — PostgreSQL READ_COMMITTED (LostUpdatePostgreSQLTest)
+- [x] SELECT FOR UPDATE 비관적 락으로 Lost Update 방지 확인 — MySQL REPEATABLE_READ (LostUpdateMySQLTest)
 
 ## ACID 학습 로드맵
 
@@ -503,5 +581,5 @@ TX1이 version을 0→1로 바꾸면, TX2의 `WHERE version = 0`에 매칭되는
 
 - [x] Lost Update — 동시 수정 시 데이터 유실
 - [x] 낙관적 락 (@Version) — 커밋 시점 버전 검증으로 Lost Update 방지
-- [ ] 비관적 락 (SELECT FOR UPDATE) — 읽기 시점부터 배타적 잠금
+- [x] 비관적 락 (SELECT FOR UPDATE) — 읽기 시점부터 배타적 잠금
 - [ ] Locking Read와 Phantom Read — REPEATABLE_READ에서 Phantom Read가 발생하는 경우

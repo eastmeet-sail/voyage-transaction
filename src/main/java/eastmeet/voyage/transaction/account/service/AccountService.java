@@ -25,6 +25,12 @@ public class AccountService {
         );
     }
 
+    public @NonNull Account getAccountByIdForUpdate(UUID id) {
+        return accountRepository.findByIdForUpdate(id).orElseThrow(
+            () -> new EntityNotFoundException("Account not found with id: " + id)
+        );
+    }
+
     @Transactional
     public void withdrawWithUncheckedException(UUID id, BigDecimal amount) {
         Account account = getAccountById(id);

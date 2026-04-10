@@ -157,6 +157,81 @@ class LostUpdatePostgreSQLTest {
     }
 
     /**
+     * PostgreSQL READ_COMMITTED + SELECT FOR UPDATE(비관적 락) — Lost Update 방지 검증
+     *
+     * 낙관적 락(@Version)은 충돌을 감지하여 TX2를 롤백시켰다.
+     * 비관적 락(SELECT FOR UPDATE)은 읽는 시점부터 X lock을 걸어 TX2가 대기하도록 만든다.
+     * TX1이 커밋하면 TX2는 TX1이 커밋한 최신 값을 읽고 정상 처리한다.
+     *
+     * 핵심 차이:
+     * - 낙관적 락: TX2 실패 → 재시도 필요
+     * - 비관적 락: TX2 대기 → 한 번에 성공 → 재시도 불필요
+     *
+     * CountDownLatch 없음: SELECT FOR UPDATE가 자체적으로 직렬화를 보장하므로 애플리케이션 동기화 불필요
+     *
+     * 결과: 두 이체 모두 반영 (from=2,000, to=18,000), 예외 없음
+     */
+    @Test
+    void READ_COMMITTED에서_비관적락으로_Lost_Update가_방지되는가() throws InterruptedException {
+        TransactionTemplate tx1 = new TransactionTemplate(transactionManager);
+        tx1.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+        TransactionTemplate tx2 = new TransactionTemplate(transactionManager);
+        tx2.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+        // writer1: 5,000원 이체 (from → to)
+        AtomicReference<Exception> writer1Exception = new AtomicReference<>();
+        Thread writer1 = new Thread(() -> {
+            try {
+                tx1.executeWithoutResult(status -> {
+                    // 스냅샷 읽기: from=10,000, to=10,000
+                    Account tx1From = accountService.getAccountByIdForUpdate(from.getId());
+                    Account tx1To = accountService.getAccountByIdForUpdate(to.getId());
+
+                    BigDecimal amount = BigDecimal.valueOf(5_000);
+                    tx1From.withdraw(amount);  // 10,000 - 5,000 = 5,000
+                    tx1To.deposit(amount);     // 10,000 + 5,000 = 15,000
+                    // dirty checking → UPDATE SET balance=5,000 / 15,000 → 커밋
+                });
+            } catch (CannotAcquireLockException e) {
+                writer1Exception.set(e);
+            }
+        });
+
+        // writer2: 3,000원 이체 (from → to)
+        AtomicReference<Exception> writer2Exception = new AtomicReference<>();
+        Thread writer2 = new Thread(() -> {
+            try {
+                tx2.executeWithoutResult(status -> {
+                    Account tx2From = accountService.getAccountByIdForUpdate(from.getId());
+                    Account tx2To = accountService.getAccountByIdForUpdate(to.getId());
+
+                    BigDecimal amount = BigDecimal.valueOf(3_000);
+                    tx2From.withdraw(amount);  // 5,000 - 3,000 = 2,000 (TX1 커밋 후 최신 값 기반)
+                    tx2To.deposit(amount);     // 15,000 + 3,000 = 18,000 (TX1 커밋 후 최신 값 기반)
+                });
+            } catch (Exception ex) {
+                writer2Exception.set(ex);
+            }
+        });
+
+        writer1.start();
+        writer2.start();
+        writer1.join();
+        writer2.join();
+
+        // SELECT FOR UPDATE로 두 이체 모두 정상 반영
+        Account fromAccount = accountService.getAccountById(from.getId());
+        Account toAccount = accountService.getAccountById(to.getId());
+
+        assertThat(fromAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(2_000));
+        assertThat(toAccount.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(18_000));
+        assertThat(writer1Exception.get()).isNull();
+        assertThat(writer2Exception.get()).isNull();
+    }
+
+
+    /**
      * PostgreSQL REPEATABLE_READ + @Version — 이중 보호 (DB + 애플리케이션) 검증
      *
      * PostgreSQL REPEATABLE_READ는 자체적으로 First-Committer-Wins로 Lost Update를 방지한다.
