@@ -8,6 +8,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.util.UUID;
 import lombok.AccessLevel;
@@ -42,6 +43,9 @@ public class Account extends BaseTimeEntity {
     @Column(name = "status", nullable = false, comment = "계좌 상태")
     @Enumerated(EnumType.STRING)
     private AccountStatus status;
+
+    @Version
+    private Long version;
 
     @Builder
     public Account(String ownerName, BigDecimal balance, AccountStatus status) {

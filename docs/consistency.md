@@ -55,9 +55,12 @@ assertThatThrownBy(() -> txTemplate.executeWithoutResult(
 코드에서 강제하는 규칙. DB 제약조건보다 먼저 실행되어 1차 방어를 담당한다.
 
 ```java
-// Account 도메인 — 잔액 부족 검증
+// Account 도메인 — 계좌 상태 + 잔액 부족 검증
 public void withdraw(BigDecimal amount) {
     validateAmount(amount);
+    if (this.status != AccountStatus.ACTIVE) {
+        throw new IllegalArgumentException("계좌상태" + "[" + status.getDescription() + "]" + "를 확인해주세요.");
+    }
     if (this.balance.compareTo(amount) < 0) {
         throw new IllegalArgumentException("잔액이 부족합니다");
     }
