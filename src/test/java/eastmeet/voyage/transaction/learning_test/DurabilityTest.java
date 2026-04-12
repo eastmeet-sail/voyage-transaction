@@ -9,8 +9,6 @@ import eastmeet.voyage.transaction.account.service.AccountService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
@@ -58,20 +56,13 @@ class DurabilityTest {
 
     @Test
     void 커밋된_데이터는_새로운_트랜잭션에서도_조회되는가() {
-
         TransactionTemplate tx1 = new TransactionTemplate(transactionManager);
         TransactionTemplate tx2 = new TransactionTemplate(transactionManager);
 
-        AtomicReference<UUID> id = new AtomicReference<>();
-        tx1.executeWithoutResult(status -> {
-            account = accountRepository.save(account);
-            id.set(account.getId());
-        });
+        Account savedAccount = tx1.execute(status -> accountRepository.save(account));
+        Account getAccount = tx2.execute(status -> accountService.getAccountById(savedAccount.getId()));
 
-        Account execute = tx2.execute(status -> accountService.getAccountById(id.get()));
-
-        assertThat(execute).isNotNull();
-        assertThat(execute.getId()).isEqualTo(id.get());
+        assertThat(getAccount).isNotNull();
     }
 
     @Test
@@ -84,7 +75,6 @@ class DurabilityTest {
         });
 
         Assertions.assertThatThrownBy(() -> accountService.getAccountById(account.getId())).isInstanceOf(EntityNotFoundException.class);
-
     }
 
     @Test
